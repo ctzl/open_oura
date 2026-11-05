@@ -47,6 +47,14 @@ enum Command {
     /// it to `--key-file` (or `oura-<serial>.key`). If the key file already
     /// exists, that key is re-installed instead of generating a new one.
     Pair,
+    /// Brute-force candidate auth keys (as written by tools/android_oura_key_extract.py)
+    /// against the ring over a single connection. On success the winning key is
+    /// saved to `--key-file` (or `oura-verified.key`).
+    VerifyKeys {
+        /// Candidates file: lines of `offset<TAB>hex` or bare 32-char hex.
+        #[arg(long)]
+        candidates: PathBuf,
+    },
     /// Connect and print device info (firmware, serial, battery, capabilities).
     Info,
     /// DESTRUCTIVE: wipe the ring back to factory state (tag `0x1a`). Erases the
@@ -257,6 +265,7 @@ async fn main() -> Result<()> {
     match &cli.command {
         Command::Scan => cmd_scan(&cli).await,
         Command::Pair => cmd_pair(&cli).await,
+        Command::VerifyKeys { candidates } => cmd_verify_keys(&cli, candidates).await,
         Command::Info => cmd_info(&cli, &key).await,
         Command::FactoryReset { yes } => cmd_factory_reset(&cli, &key, *yes).await,
         Command::Sync { no_sync_time, .. } => cmd_sync(&cli, &key, !*no_sync_time).await,
@@ -515,6 +524,105 @@ async fn cmd_pair(cli: &Cli) -> Result<()> {
         out.display()
     );
     let _ = client.transport().disconnect().await;
+    Ok(())
+}
+
+/// Parse candidate keys from tools/android_oura_key_extract.py output:
+/// lines of `offset<TAB>hex` or bare 32-char hex. Deduplicates, preserving order.
+fn load_candidates(path: &Path) -> Result<Vec<[u8; 16]>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading candidates file {}", path.display()))?;
+    let mut seen = std::collections::HashSet::new();
+    let mut keys = Vec::new();
+    for line in text.lines() {
+        let field = line.split(['\t', ' ']).last().unwrap_or("").trim().to_ascii_lowercase();
+        if field.len() != 32 {
+            continue;
+        }
+        let Ok(bytes) = hex::decode(&field) else { continue };
+        let Ok(key): Result<[u8; 16], _> = bytes.try_into() else { continue };
+        if seen.insert(key) {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
+}
+
+async fn cmd_verify_keys(cli: &Cli, candidates: &PathBuf) -> Result<()> {
+    let keys = load_candidates(candidates)?;
+    if keys.is_empty() {
+        return Err(anyhow!("no 16-byte hex candidates found in {}", candidates.display()));
+    }
+    println!("Trying {} unique candidate keys (deduplicated) against the ring...", keys.len());
+    let mut client = connect(cli).await?;
+    let serial = client.serial().await.unwrap_or_else(|_| "unknown".into());
+
+    // The ring drops the link after a rejected auth, so a GATT write failure means
+    // "reconnect and retry this candidate". A missing nonce response right after a
+    // connect just means the ring wasn't ready yet: retry the same key in place.
+    let mut i = 0usize;
+    let mut reconnects = 0usize;
+    let mut quiet_retries = 0usize;
+    while i < keys.len() {
+        let key = &keys[i];
+        match client.authenticate(key).await {
+            Ok(result) => {
+                let out = cli
+                    .key_file
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(format!("oura-verified-{serial}.key")));
+                save_key(&out, key)?;
+                println!("\nMATCH at candidate #{i}: {result:?} — key saved to {}", out.display());
+                let _ = client.transport().disconnect().await;
+                return Ok(());
+            }
+            Err(e) => {
+                let s = e.to_string();
+                if s.contains("rejected the key")
+                    || s.contains("not the one in use")
+                    || s.contains("factory-reset")
+                {
+                    quiet_retries = 0;
+                    println!("[{i}/{}] candidate rejected: {}", keys.len(), hex::encode(key));
+                    i += 1;
+                } else if s.contains("no nonce response") && quiet_retries < 3 {
+                    // Ring answered nothing: it is likely still settling after the
+                    // connect. Retry the same key after a pause before blaming the link.
+                    quiet_retries += 1;
+                    eprintln!("[{i}] no response, retry {quiet_retries}/3 in place");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                } else {
+                    quiet_retries = 0;
+                    reconnects += 1;
+                    eprintln!("[{i}] link error: {e} — reconnecting (#{reconnects})");
+                    let _ = client.transport().disconnect().await;
+                    // After a rejected auth the ring stops advertising for a few
+                    // seconds; reconnecting too soon finds a stale cached
+                    // peripheral and fails with "Not connected".
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    if reconnects > 1000 {
+                        return Err(anyhow!("giving up after {reconnects} reconnects"));
+                    }
+                    // The ring may still be silent; retry the connect a few times.
+                    let mut attempt = 0;
+                    client = loop {
+                        attempt += 1;
+                        match connect(cli).await {
+                            Ok(c) => break c,
+                            Err(e) if attempt < 5 => {
+                                eprintln!("  reconnect attempt {attempt} failed: {e}");
+                                tokio::time::sleep(Duration::from_secs(3)).await;
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    };
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    let _ = client.transport().disconnect().await;
+    println!("No candidate authenticated. The ring's key is not in this file.");
     Ok(())
 }
 
