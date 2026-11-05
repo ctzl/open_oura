@@ -69,20 +69,32 @@ pub fn name_matches(advertised: &str, needle: &str) -> bool {
 /// substring. Returns candidates sorted by signal strength (strongest first).
 pub async fn scan(name_contains: &str, timeout: Duration) -> Result<Vec<Discovered>> {
     let adapter = first_adapter().await?;
+    // WinRT's background service filter misses rings whose UUID only appears in
+    // the scan response; scan unfiltered and post-filter on props.services below.
     adapter
-        .start_scan(ScanFilter {
-            services: vec![protocol::OURA_SERVICE],
-        })
+        .start_scan(ScanFilter { services: vec![] })
         .await?;
 
     let deadline = Instant::now() + timeout;
     let mut found: Vec<Discovered> = Vec::new();
+    let mut ticks = 0u32;
     while Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(400)).await;
-        for p in adapter.peripherals().await? {
+        let periphs = adapter.peripherals().await?;
+        if std::env::var("OURA_SCAN_DEBUG").is_ok() && ticks % 5 == 0 {
+            eprintln!("[debug] tick {ticks}: {} peripherals seen", periphs.len());
+        }
+        ticks += 1;
+        for p in periphs {
             let Some(props) = p.properties().await? else {
                 continue;
             };
+            if std::env::var("OURA_SCAN_DEBUG").is_ok() {
+                eprintln!(
+                    "[debug] name={:?} rssi={:?} services={:?}",
+                    props.local_name, props.rssi, props.services
+                );
+            }
             if !props.services.contains(&protocol::OURA_SERVICE) {
                 continue;
             }
@@ -122,9 +134,7 @@ impl BleTransport {
     ) -> Result<Self> {
         let adapter = first_adapter().await?;
         adapter
-            .start_scan(ScanFilter {
-                services: vec![protocol::OURA_SERVICE],
-            })
+            .start_scan(ScanFilter { services: vec![] })
             .await?;
 
         let deadline = Instant::now() + scan_timeout;
@@ -171,6 +181,9 @@ impl BleTransport {
             if !peripheral.is_connected().await? {
                 peripheral.connect().await?;
             }
+            // The Oura GATT characteristics require an encrypted link. btleplug has
+            // no pairing API; on Windows the OS bonds the device when paired from
+            // Bluetooth settings and encrypts the link transparently.
             peripheral.discover_services().await?;
 
             let chars = peripheral.characteristics();
