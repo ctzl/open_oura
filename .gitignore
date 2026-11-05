@@ -97,3 +97,6 @@ local/libtorch-ios/pytorch/build_ios_device/
 
 # Working plan drafts kept out of the repo (self-declared "not committed").
 PLAN-*.md
+
+# Auth key recovered from the Android app capture (local only)
+key.hex

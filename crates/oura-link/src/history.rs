@@ -37,7 +37,19 @@ impl ValidatedHistoryBatch {
 // with a near-u32::MAX timestamp and force every later sync to replay from zero.
 const MAX_CURSOR_ADVANCE_DS: u32 = 180 * 24 * 60 * 60 * 10;
 
+// Absolute sanity bound for a cold start (cursor 0). The ring's oldest event sits
+// months ahead of cursor 0, so the relative guard above would reject the entire
+// backlog on a fresh database (observed on Ring 4 fw 2.12.15: 4096 events rejected,
+// cursor never advanced). Anchor the upper bound to wall-clock now instead; the
+// near-u32::MAX garbage fragments are still far beyond it.
 fn plausible_timestamp(batch_start: u32, timestamp: u32) -> bool {
+    if batch_start == 0 {
+        let now_ds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| (d.as_secs() / 10) as u32)
+            .unwrap_or(u32::MAX);
+        return timestamp <= now_ds.saturating_add(365 * 24 * 60 * 60 * 10);
+    }
     timestamp <= batch_start.saturating_add(MAX_CURSOR_ADVANCE_DS)
 }
 

@@ -56,7 +56,7 @@ forward(ppg_segments [n, 1500] f32, demographics [1, 5] f32)
 ## Running it
 
 ```
-python tools/run_cva_model.py [DB] --sex M --age 30 --height 1.78 --weight 75 --ring 10
+python tools/run_cva_model.py [DB] --sex M --age 30 --height 1.74 --weight 75 --ring 11
 ```
 
 On one night (10 valid 1500-sample segments from 18 measurements) with placeholder
