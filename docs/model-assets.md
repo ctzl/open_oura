@@ -94,7 +94,7 @@ runner in this repo or open_health.
 ## 5. The set rotates per app version
 
 `tools/export_mobile.py` / `tools/inspect_models.py` reference an **older**
-app's set that no longer exists in 2.55.1: `cva_2_1_0` (replaced by
+app's set that no longer exists in 5.5.0: `cva_2_1_0` (replaced by
 `cva_1_3_0` + `cva_2_1_5`), `insomnia_0_1_4` (gone), `atlas_2_1_0` →
 `atlas_3_0_0`, `energy_expenditure_1_0_0` → `2_1_1`/`2_4_1`,
 `stress_resilience_2_2_1` → `2_2_2`, `automatic_activity_detection_3_1_11` →
