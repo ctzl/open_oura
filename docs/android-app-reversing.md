@@ -292,3 +292,33 @@ During scanning, another nearby Oura device also appeared:
 
 The local probe defaults to a `Ring 5` name filter to avoid accidentally probing
 other nearby Oura devices.
+
+## Model asset decryption key (2026-11-05, Pixel 8, Oura 5.5.0)
+
+The `assets/*.pt.enc` blobs in `split_oura_models.apk` are Tink AES-256-GCM
+ciphertexts: `output_prefix(5) || iv(16) || ct+tag`, no zip framing. The app
+log confirms: `PyTorchModelAsset - Attempting to decrypt cva_2_1_5.pt.enc
+with Tink AES-256-GCM (16-byte IV)`. `cva_2_1_5.pt.enc` prefix: `40dd42467c`.
+
+Searched offline (full `adb pull` of `files/`, `cache/`, `shared_prefs/`,
+`no_backup/`, plus the live `assa-store.realm`):
+
+- No Tink keyset for the models anywhere on disk. The only keysets found are
+  in `shared_prefs/OuraApplicationEncrypted.xml` (AesSivKey + AesGcmKey) —
+  those encrypt the prefs file itself; their output prefixes do not match
+  `40dd42467c`.
+- No decrypted `.pt` (PK magic) on disk; `no_backup/` holds only WorkManager
+  state. The key is either compiled into the base APK or hardware-Keystore
+  backed (the prefs keysets are MasterKey/Keystore-encrypted, so the model key
+  likely is too — it never appears in plaintext on disk).
+
+Capture path when the phone is back: `tools/frida/cipher_key_hook.js` hooks
+`javax.crypto.Cipher.init(DECRYPT_MODE)` and prints any 32-byte key. Pair
+with the matching `frida-server` (17.26.0, staged at `tools/frida-server`):
+`adb root && adb push tools/frida-server /data/local/tmp/ && adb shell
+"/data/local/tmp/frida-server &" && frida -U -n Oura -l
+tools/frida/cipher_key_hook.js`, then open the Oura day view to trigger a
+calculation (the app decrypts models during daily calculations).
+
+Note: the shipped APK asset is `cva_2_1_5.pt.enc`; `tools/run_cva_model.py`
+names `cva_2_1_0.pt` — pass the decrypted file explicitly.
