@@ -100,3 +100,12 @@ PLAN-*.md
 
 # Auth key recovered from the Android app capture (local only)
 key.hex
+
+# Server-delivered model decryption key (account-specific, may rotate)
+model_key.hex
+key.hex
+
+# downloaded frida server binary (get from github.com/frida/frida/releases)
+tools/frida-server
+# local caches
+nssa_cache.json
