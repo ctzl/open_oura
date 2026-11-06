@@ -1,18 +1,28 @@
 # Oura model assets: fetch, decrypt, inventory
 
 How we got the on-device ML models out of the Oura app, decrypted them, and
-what each one is. Verified against app **v2.55.1** on a Pixel 7 (rooted),
-Nov 2026. Companion: `docs/algorithms/sleepnet.md` (key-capture detail),
+what each one is. Verified against Oura app **5.5.0** (XAPK manifest 7.15.0,
+version code 260521094) on a **Pixel 9 Pro XL running LineageOS**, Nov 2026.
+Companion: `docs/algorithms/sleepnet.md` (key-capture detail),
 `docs/cva-cardiovascular-age.md` (CVA deep-dive).
 
 ## 1. Where the models live
 
 The app ships its TorchScript models as `assets/*.pt.enc` inside a **separate
 split APK** (`split_oura_models.apk`, ~58 MB, 33 assets) installed alongside
-the base app — not in `base.apk`, not downloaded at runtime. We pulled it off
-the device once into `tools/captures/android/split_oura_models.apk`
-(gitignored; re-pull with `adb pull` from the app's `/data/app/.../` split
-set, or extract from the XAPK).
+the base app — not in `base.apk`, not downloaded at runtime. Split APKs live
+in the app's install dir next to `base.apk`; we pulled it off the phone with
+root adbd (LineageOS):
+
+```
+adb pull "/data/app/~~GA5s63-YaVV9e8ufM42O5A==/com.ouraring.oura-eheVKh7CyiR4z3OUKrQhQg==/split_oura_models.apk" \
+    tools/captures/android/split_oura_models.apk
+```
+
+(The `~~<hash>`/`-<hash>` dir components change on every reinstall — find the
+current one with `ls /data/app | grep oura`.) Saved to
+`tools/captures/android/split_oura_models.apk` (gitignored; alternatively
+extract it from the XAPK without a phone at all).
 
 ## 2. Encryption
 
@@ -42,7 +52,7 @@ python tools/decrypt_models.py --only cva # subset
 Reads `model_key.hex`, prints `PK` magic check per asset. As of this writing:
 **33/33 decrypt OK**. `notes/models/` is gitignored (server-licensed binaries).
 
-## 4. Inventory (33 assets, app 2.55.1)
+## 4. Inventory (33 assets, app 5.5.0)
 
 Schemas are the real `forward()` signatures dumped from the TorchScript
 archives (saved in `notes/model_schemas.json`). "Runnable" = we have a working
@@ -50,10 +60,10 @@ runner in this repo or open_health.
 
 | Asset | TorchScript class | What it is | Status |
 |---|---|---|---|
-| `astd_event_detection_0_1_1` | `astd_event_detection.EventDetection` | event detection (2 in, 8 out) | unexplored |
+| `astd_event_detection_0_1_1` | `astd_event_detection.EventDetection` | event detection (2 in, 8 out) | **RUNNING** — `tools/run_stress_events.py` |
 | `atlas_3_0_0` | `BioZ` | bioimpedance (atlas) sensing, 6 in / 12 out | blocked: ring stream `0x88 atlas_raw_bioz_data` is backend-gated |
 | `atlas_trendline_1_1_0` | `TrendlineCombo` | bioz trendlines, 5 in / 15 out | blocked (same gate) |
-| `automatic_activity_detection_3_1_12` / `_3_1_15` | `AutomaticActivityDetectionModel` | AAD: movement/activity classes from IMU (12–14 in) | inputs mostly IMU windows we can stream; not run yet |
+| `automatic_activity_detection_3_1_12` / `_3_1_15` | `AutomaticActivityDetectionModel` | AAD: movement/activity classes from IMU (12–14 in) | `tools/run_activity_model.py` exists but is pinned to `3_1_11`, gone in 5.5.0 — needs re-pinning |
 | `awhr_imputation_1_2_0` | `WorkoutHeartRateImputationModel` | fills gaps in workout HR | not run |
 | `awhr_profile_selector_1_0_1` | `AwhrProfileSelectorModel` | picks per-user HR profile | not run |
 | `cumulative_stress_2_0_0` | `ChronicStress` | long-horizon stress (28 in / 19 out) | inputs overlap our stress pipeline; not run |
@@ -71,11 +81,11 @@ runner in this repo or open_health.
 | `meal_timing_0_1_0` | `MealWindowClustering` | clusters eating windows (3 in) | not run |
 | `popsicle_1_6_0` / `_1_9_1` | `popsicle.popsicle_combo.Popsicle` | codename unknown (12–13 in / 9–12 out) | unexplored |
 | `pregnancy_biometrics_0_4_0` | `PregnancyBiometrics` | pregnancy features (7 in / 21 out) | not run |
-| `sleepnet_bdi_0_4_0` | `SleepNetModel` | **sleep staging, 3-arg variant** | **RUNNING** — `tools/run_sleep_model.py` |
-| `sleepnet_moonstone_1_2_0` | `SleepNetModel` | sleep staging, 11-arg variant | not run |
-| `sleepstaging_2_6_0` | — | sleep staging | **won't load**: uses custom op `oura_ops::oura_create_windows` (needs Oura's custom TorchScript ops registered) |
-| `step_counter_1_3_0` | `AppStepCounterModel` | steps from IMU | **RUNNING** — `tools/run_activity_model.py` |
-| `steps_motion_decoder_2_0_0` | `StepsMotionDecoderModel` | decodes step motion type | not run |
+| `sleepnet_bdi_0_4_0` | `SleepNetModel` | sleep staging, 3-arg variant | not run |
+| `sleepnet_moonstone_1_2_0` | `SleepNetModel` | **sleep staging, 11-arg variant** | **RUNNING** — `tools/run_sleep_model.py` |
+| `sleepstaging_2_6_0` | — | sleep staging | **won't load**: calls custom op `oura_ops::oura_create_windows` from its internal `hrv_raw_to_low_level_features` module (needs Oura's custom TorchScript ops registered) |
+| `step_counter_1_3_0` | `AppStepCounterModel` | steps from IMU | not run |
+| `steps_motion_decoder_2_0_0` | `StepsMotionDecoderModel` | decodes step motion type | helper input for `run_activity_model.py` |
 | `stress_daytime_sensing_1_1_0` | `DaytimeStressSensing` | daytime stress events | **RUNNING** — `tools/run_stress_model.py` / `run_stress_events.py` |
 | `stress_resilience_2_2_2` | `Resilience` | resilience score (15 in) | not run |
 | `training_stress_score_0_2_2` | `stress_ots.OTS` | training stress | not run |
@@ -95,6 +105,10 @@ bioimpedance, `whr` = workout/exercise HR.
 
 ## 6. Gotchas
 
+- `tools/run_activity_model.py` is currently broken against 5.5.0 assets: it
+  pins `automatic_activity_detection_3_1_11.pt`, which this app version no
+  longer ships (it has `3_1_12`/`3_1_15`). Same failure mode as the CVA
+  runner's `cva_2_1_0` pin — resolve newest-prefix instead.
 - The key is tied to the account/server session; if a future app update
   changes it, `--list` failing = re-capture, not a code bug.
 - `sleepstaging_2_6_0` needs `oura_ops::oura_create_windows` — vanilla
