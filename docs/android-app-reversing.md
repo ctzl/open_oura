@@ -295,10 +295,12 @@ other nearby Oura devices.
 
 ## Model asset decryption key (2026-11-05, Pixel 8, Oura 5.5.0)
 
-The `assets/*.pt.enc` blobs in `split_oura_models.apk` are Tink AES-256-GCM
-ciphertexts: `output_prefix(5) || iv(16) || ct+tag`, no zip framing. The app
-log confirms: `PyTorchModelAsset - Attempting to decrypt cva_2_1_5.pt.enc
-with Tink AES-256-GCM (16-byte IV)`. `cva_2_1_5.pt.enc` prefix: `40dd42467c`.
+The `assets/*.pt.enc` blobs in `split_oura_models.apk` are AES-256-GCM
+ciphertexts framed as `iv(12) || ct+tag` — verified: `AESGCM(key).decrypt(ct[:12],
+ct[12:])` succeeds for **all 33** assets, while the earlier `output_prefix(5) ||
+iv(16)` guess fails for all of them. The `40dd42467c` "prefix" noted below is just
+the first 5 bytes of the IV; the app log's "16-byte IV" line does not match the
+current APK's actual framing. `tools/try_model_keys.py` uses the correct framing.
 
 Searched offline (full `adb pull` of `files/`, `cache/`, `shared_prefs/`,
 `no_backup/`, plus the live `assa-store.realm`):

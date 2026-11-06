@@ -60,6 +60,16 @@ JCE/Tink, so the 32-byte key passes through `Cipher.init(DECRYPT_MODE, key)` and
 `key.getEncoded()` reads it directly. (Native EVP/BoringSSL hooks find nothing -
 the model path never goes through the global libcrypto exports we can see.)
 
+**Update (2026-11-06, Pixel 8, Oura 5.5.0):** the Java-crypto path is gone in
+this app version - `cipher_key_hook.js` prints `DONE 0 keys`. The key now passes
+through the app's **statically-linked BoringSSL**, so hook the native
+`EVP_*`/`AEAD_CTX_*` entry points instead: `tools/frida/module_scan_key_hook.js`
+(scans every loaded module for BoringSSL symbols, then hooks
+`EVP_CIPHER_CTX_*` / `AEAD_CTX_init`). It prints the key as
+`AES-256 key (AEAD_CTX_init): <hex>`; the model key is the one that appears
+immediately before an `OPEN` of a `temp_file_*.pt.enc`. Same key value as before
+(`(key redacted)`), so it has not rotated.
+
     model key (AES-256-GCM): deadbeef00000000000000000000000000000000000000000000000000000004
 
 Verified with `tools/try_model_keys.py`: this single key GCM-decrypts **all 33**

@@ -125,6 +125,13 @@ still blocks a bit-exact reproduction is **inputs and constants**, not network:
   `ring_met > 1.8` with code 3). Our captures are mostly nocturnal; enable the
   `daytime_hr` feature to collect awake HRV. `tools/run_stress_model.py` runs the
   model on whatever awake samples exist.
+- **Stress events**: the `intensity_scaled` series from `run_stress_model.py` is
+  exactly the DSA input of `astd_event_detection_0_1_1` (decrypted from the APK
+  asset — plain `iv(12)` framing). `tools/run_stress_events.py` chains the two:
+  an event = 4 consecutive qualifying 15-min bins in a 65-min window (thresholds
+  ±0.4 borderline / ±0.5 full). Two model quirks handled there: timestamps are
+  cast to int32 internally (feed day-relative ms, one window per day), and a
+  zero-event day crashes inside `forward` (treat as "no events").
 - **Resilience inputs**: `stress_resilience` additionally needs a ~14-day history
   (`daily_stress_list` / `daily_restorative_time_list` / `daily_sleep_recovery_list`)
   plus the daily scores (`sleep_score`/`hrv_balance`/`recovery_index`) — so it
