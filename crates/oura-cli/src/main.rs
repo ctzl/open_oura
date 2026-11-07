@@ -140,6 +140,19 @@ enum Command {
     },
     /// Read the real on-ring MODE/status of the data features (what's actually on).
     FeatureStatus,
+    /// List registered rings from the database (offline): names, serials, event
+    /// counts, last sync.
+    Rings,
+    /// Set a ring's display name in the registry (offline).
+    RingName {
+        /// Ring serial (see `oura rings`); a unique prefix is accepted.
+        serial: String,
+        /// New label, e.g. "Daily ring".
+        name: String,
+        /// Optional note (e.g. "banned by Oura").
+        #[arg(long)]
+        note: Option<String>,
+    },
 }
 
 fn feature_mode_name(mode: u8) -> &'static str {
@@ -288,7 +301,85 @@ async fn main() -> Result<()> {
         Command::Subscribe { feature, mode } => cmd_subscribe(&cli, &key, feature, mode).await,
         Command::FeatureMode { feature, mode } => cmd_feature_mode(&cli, &key, feature, mode).await,
         Command::FeatureStatus => cmd_feature_status(&cli, &key).await,
+        Command::Rings => cmd_rings(&cli),
+        Command::RingName { serial, name, note } => cmd_ring_name(&cli, serial, name, note.as_deref()),
     }
+}
+
+/// Resolve a user-supplied serial: exact match, else a unique case-insensitive
+/// prefix among registered rings.
+fn resolve_serial(store: &Store, want: &str) -> Result<String> {
+    let rings = store.list_rings()?;
+    let want = want.to_ascii_uppercase();
+    if let Some(r) = rings.iter().find(|r| r.0.to_ascii_uppercase() == want) {
+        return Ok(r.0.clone());
+    }
+    let matches: Vec<&String> = rings
+        .iter()
+        .filter(|r| r.0.to_ascii_uppercase().starts_with(&want))
+        .map(|r| &r.0)
+        .collect();
+    match matches.len() {
+        1 => Ok(matches[0].clone()),
+        0 => Err(anyhow!(
+            "no registered ring matches {want} — run `oura rings` to list them"
+        )),
+        n => Err(anyhow!(
+            "{want} is ambiguous ({n} rings match); give more of the serial"
+        )),
+    }
+}
+
+fn fmt_unix(ts: i64) -> String {
+    if ts <= 0 {
+        return "never".to_string();
+    }
+    let secs = ts as f64 / 86400.0;
+    let days = secs.floor() as i64;
+    // Civil-from-days (Howard Hinnant's algorithm) — no chrono dependency.
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    let rem = (secs.fract().abs() * 86400.0) as u64;
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", rem / 3600, (rem % 3600) / 60)
+}
+
+fn cmd_rings(cli: &Cli) -> Result<()> {
+    let store = Store::open(&cli.db)?;
+    let rings = store.list_rings()?;
+    if rings.is_empty() {
+        println!("No rings registered yet — pair or sync one first.");
+        return Ok(());
+    }
+    println!("{:<17} {:<22} {:>9}  {:<17} {}", "SERIAL", "NAME", "EVENTS", "LAST SYNC", "NOTE");
+    for (serial, name, note, _added, _seen, last_sync, _cursor, count) in &rings {
+        println!(
+            "{:<17} {:<22} {:>9}  {:<17} {}",
+            serial,
+            name,
+            count,
+            fmt_unix(*last_sync),
+            note.clone().unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+fn cmd_ring_name(cli: &Cli, serial: &str, name: &str, note: Option<&str>) -> Result<()> {
+    let store = Store::open(&cli.db)?;
+    let serial = resolve_serial(&store, serial)?;
+    if !store.rename_ring(&serial, name, note)? {
+        return Err(anyhow!("ring {serial} is not registered"));
+    }
+    println!("Renamed {serial} to \"{name}\".");
+    Ok(())
 }
 
 /// Subscribe a feature capability via SetFeatureSubscription (needs auth).
