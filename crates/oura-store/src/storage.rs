@@ -426,29 +426,50 @@ impl Store {
     pub fn device_info(
         &self,
     ) -> Result<Option<(String, String, String, String, String, i64, i64, i64)>> {
-        let row = self
-            .conn
-            .query_row(
-                "SELECT d.serial, COALESCE(d.hardware_id,''), COALESCE(d.firmware,''),
-                        COALESCE(d.api_version,''), COALESCE(d.mac,''), COALESCE(d.updated_unix,0),
-                        COALESCE(s.last_sync_unix,0), COALESCE(s.next_cursor,0)
-                 FROM device d LEFT JOIN sync_state s ON s.serial = d.serial
-                 ORDER BY d.updated_unix DESC LIMIT 1",
-                [],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, String>(4)?,
-                        r.get::<_, i64>(5)?,
-                        r.get::<_, i64>(6)?,
-                        r.get::<_, i64>(7)?,
-                    ))
-                },
-            )
-            .optional()?;
+        self.device_info_filtered(None)
+    }
+
+    /// Same as `device_info` but for one specific serial (the multi-ring path).
+    pub fn device_info_for(
+        &self,
+        serial: &str,
+    ) -> Result<Option<(String, String, String, String, String, i64, i64, i64)>> {
+        self.device_info_filtered(Some(serial))
+    }
+
+    fn device_info_filtered(
+        &self,
+        serial: Option<&str>,
+    ) -> Result<Option<(String, String, String, String, String, i64, i64, i64)>> {
+        let map = |r: &rusqlite::Row| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, i64>(7)?,
+            ))
+        };
+        let sql = if serial.is_some() {
+            "SELECT d.serial, COALESCE(d.hardware_id,''), COALESCE(d.firmware,''),
+                    COALESCE(d.api_version,''), COALESCE(d.mac,''), COALESCE(d.updated_unix,0),
+                    COALESCE(s.last_sync_unix,0), COALESCE(s.next_cursor,0)
+             FROM device d LEFT JOIN sync_state s ON s.serial = d.serial
+             WHERE d.serial = ?1"
+        } else {
+            "SELECT d.serial, COALESCE(d.hardware_id,''), COALESCE(d.firmware,''),
+                    COALESCE(d.api_version,''), COALESCE(d.mac,''), COALESCE(d.updated_unix,0),
+                    COALESCE(s.last_sync_unix,0), COALESCE(s.next_cursor,0)
+             FROM device d LEFT JOIN sync_state s ON s.serial = d.serial
+             ORDER BY d.updated_unix DESC LIMIT 1"
+        };
+        let row = match serial {
+            Some(s) => self.conn.query_row(sql, params![s], map).optional()?,
+            None => self.conn.query_row(sql, [], map).optional()?,
+        };
         Ok(row)
     }
 
@@ -673,29 +694,46 @@ impl Store {
     /// `ring_start` (`0x41`) reboot records even when `decoded_json` is NULL on an
     /// unmigrated read-only database so reboot boundaries are never hidden.
     pub fn decoded_events(&self) -> Result<Vec<(i64, u8, String, i64)>> {
-        let mut stmt = self.conn.prepare(
+        self.decoded_events_filtered(None)
+    }
+
+    /// Decoded events for one device serial only — the multi-ring path.
+    pub fn decoded_events_for(&self, serial: &str) -> Result<Vec<(i64, u8, String, i64)>> {
+        self.decoded_events_filtered(Some(serial))
+    }
+
+    fn decoded_events_filtered(&self, serial: Option<&str>) -> Result<Vec<(i64, u8, String, i64)>> {
+        let where_serial = if serial.is_some() { "WHERE serial = ?1 AND " } else { "WHERE " };
+        let sql = format!(
             "SELECT ring_timestamp, tag, decoded_json, captured_unix, \
                     CASE WHEN decoded_json IS NULL THEN body ELSE NULL END \
              FROM events \
-             WHERE decoded_json IS NOT NULL OR (tag = 65 AND LENGTH(body) >= 14) \
-             ORDER BY captured_unix, id",
-        )?;
-        let rows = stmt
-            .query_map([], |r| {
-                let ts = r.get::<_, i64>(0)?;
-                let tag = r.get::<_, i64>(1)? as u8;
-                let decoded_opt = r.get::<_, Option<String>>(2)?;
-                let captured = r.get::<_, i64>(3)?;
-                let json = match decoded_opt {
-                    Some(s) => s,
-                    None => {
-                        let body = r.get::<_, Option<Vec<u8>>>(4)?.unwrap_or_default();
-                        decode_stored_event(tag, &body, None).unwrap_or_else(|| "{}".to_string())
-                    }
-                };
-                Ok((ts, tag, json, captured))
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+             {where_serial}(decoded_json IS NOT NULL OR (tag = 65 AND LENGTH(body) >= 14)) \
+             ORDER BY captured_unix, id"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let map_row = |r: &rusqlite::Row| -> rusqlite::Result<(i64, u8, String, i64)> {
+            let ts = r.get::<_, i64>(0)?;
+            let tag = r.get::<_, i64>(1)? as u8;
+            let decoded_opt = r.get::<_, Option<String>>(2)?;
+            let captured = r.get::<_, i64>(3)?;
+            let json = match decoded_opt {
+                Some(s) => s,
+                None => {
+                    let body = r.get::<_, Option<Vec<u8>>>(4)?.unwrap_or_default();
+                    decode_stored_event(tag, &body, None).unwrap_or_else(|| "{}".to_string())
+                }
+            };
+            Ok((ts, tag, json, captured))
+        };
+        let rows = match serial {
+            Some(s) => stmt
+                .query_map(params![s], map_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+            None => stmt
+                .query_map([], map_row)?
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        };
         Ok(rows)
     }
 

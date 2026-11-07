@@ -123,6 +123,40 @@ pub async fn scan(name_contains: &str, timeout: Duration) -> Result<Vec<Discover
     Ok(found)
 }
 
+/// Scan for Oura advertisers and return the live peripherals, strongest first.
+/// Unlike [`scan`], this keeps the handles so a caller can connect to a specific
+/// one without re-scanning — used to probe rings by GATT serial, the only
+/// reliable way to target one ring when several exist (advertisements carry
+/// neither the serial nor a stable address).
+pub async fn scan_peripherals(timeout: Duration) -> Result<Vec<(Peripheral, i16)>> {
+    let adapter = first_adapter().await?;
+    adapter
+        .start_scan(ScanFilter { services: vec![] })
+        .await?;
+
+    let deadline = Instant::now() + timeout;
+    let mut found: Vec<(Peripheral, i16)> = Vec::new();
+    while Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        for p in adapter.peripherals().await? {
+            let Some(props) = p.properties().await? else {
+                continue;
+            };
+            if !props.services.contains(&protocol::OURA_SERVICE) {
+                continue;
+            }
+            let rssi = props.rssi.unwrap_or(i16::MIN);
+            match found.iter_mut().find(|(q, _)| q.id() == p.id()) {
+                Some(e) => e.1 = rssi,
+                None => found.push((p, rssi)),
+            }
+        }
+    }
+    let _ = adapter.stop_scan().await;
+    found.sort_by_key(|(_, r)| std::cmp::Reverse(*r));
+    Ok(found)
+}
+
 impl BleTransport {
     /// Scan for and connect to a ring, selecting the strongest match for
     /// `name_contains`. If `address` is given, only a device whose id matches is
@@ -171,7 +205,14 @@ impl BleTransport {
         let _ = adapter.stop_scan().await;
 
         let (peripheral, _) = chosen.ok_or(Error::DeviceNotFound)?;
+        Self::setup(peripheral).await
+    }
 
+    /// Complete the GATT setup for an already-discovered peripheral: connect,
+    /// discover services, subscribe to every notify/indicate characteristic in
+    /// the Oura service. Split out of [`Self::connect`] so callers can probe
+    /// several candidates (see [`scan_peripherals`]).
+    pub async fn setup(peripheral: Peripheral) -> Result<Self> {
         // CoreBluetooth's connect (and, on some stacks, service discovery) has no
         // deadline of its own: a ring that advertises but won't complete the GATT
         // handshake — e.g. because a phone still holds the single peripheral link —
