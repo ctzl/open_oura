@@ -63,7 +63,7 @@ runner in this repo or open_health.
 | `astd_event_detection_0_1_1` | `astd_event_detection.EventDetection` | event detection (2 in, 8 out) | **RUNNING** — `tools/run_stress_events.py` |
 | `atlas_3_0_0` | `BioZ` | bioimpedance (atlas) sensing, 6 in / 12 out | blocked: ring stream `0x88 atlas_raw_bioz_data` is backend-gated |
 | `atlas_trendline_1_1_0` | `TrendlineCombo` | bioz trendlines, 5 in / 15 out | blocked (same gate) |
-| `automatic_activity_detection_3_1_12` / `_3_1_15` | `AutomaticActivityDetectionModel` | AAD: movement/activity classes from IMU (12–14 in) | `tools/run_activity_model.py` exists but is pinned to `3_1_11`, gone in 5.5.0 — needs re-pinning |
+| `automatic_activity_detection_3_1_12` / `_3_1_15` | `AutomaticActivityDetectionModel` | AAD: movement/activity classes from IMU (12–14 in) | **RUNNING** — `tools/run_activity_model.py` (newest-prefix resolution; also uses `steps_motion_decoder`) |
 | `awhr_imputation_1_2_0` | `WorkoutHeartRateImputationModel` | fills gaps in workout HR | not run |
 | `awhr_profile_selector_1_0_1` | `AwhrProfileSelectorModel` | picks per-user HR profile | not run |
 | `cumulative_stress_2_0_0` | `ChronicStress` | long-horizon stress (28 in / 19 out) | inputs overlap our stress pipeline; not run |
@@ -76,14 +76,14 @@ runner in this repo or open_health.
 | `energy_expenditure_2_1_1` / `_2_4_1` | `EnergyExpenditureModel` | calories (16 in) | inputs = IMU+HR; not run |
 | `halite_1_2_0` | `halite.inference.halite_combo.Halite` | codename unknown; first arg is optional Tensor + int | unexplored |
 | `high_low_hr_1_1_0` | `HiloHRv1_1Module` | daily high/low HR markers | not run |
-| `illness_detection_0_5_1` | `IllnessDetectionModel` | illness detection (23 in / 18 out) | not run |
+| `illness_detection_0_5_1` | `IllnessDetectionModel` | illness detection (23 in / 18 out) | **RUNNING** — `tools/run_illness_model.py` (open_health dashboard) |
 | `locomotion_0_0_10` | `LocomotionModel` | gait/locomotion (25 in / 15 out) | not run |
 | `meal_timing_0_1_0` | `MealWindowClustering` | clusters eating windows (3 in) | not run |
 | `popsicle_1_6_0` / `_1_9_1` | `popsicle.popsicle_combo.Popsicle` | codename unknown (12–13 in / 9–12 out) | unexplored |
 | `pregnancy_biometrics_0_4_0` | `PregnancyBiometrics` | pregnancy features (7 in / 21 out) | not run |
 | `sleepnet_bdi_0_4_0` | `SleepNetModel` | sleep staging, 3-arg variant | not run |
 | `sleepnet_moonstone_1_2_0` | `SleepNetModel` | **sleep staging, 11-arg variant** | **RUNNING** — `tools/run_sleep_model.py` |
-| `sleepstaging_2_6_0` | — | sleep staging | **won't load**: calls custom op `oura_ops::oura_create_windows` from its internal `hrv_raw_to_low_level_features` module (needs Oura's custom TorchScript ops registered) |
+| `sleepstaging_2_6_0` | — | sleep staging | **RUNNING** — `tools/run_sleep_model.py` (NSSA path). Needs `sleepstaging_2_6_0_classifier.bin` (extract with `open_health/tools/extract_nssa_classifier.py` from `split_config.arm64_v8a.apk`) + the custom op via `nssa_ops.py` (loads `nssa_ops_<tag>.dll` built by `build_nssa_ops.bat`; pure-Python fallback ~50x slower). `sleepnet_moonstone_1_2_0` remains the fallback. |
 | `step_counter_1_3_0` | `AppStepCounterModel` | steps from IMU | not run |
 | `steps_motion_decoder_2_0_0` | `StepsMotionDecoderModel` | decodes step motion type | helper input for `run_activity_model.py` |
 | `stress_daytime_sensing_1_1_0` | `DaytimeStressSensing` | daytime stress events | **RUNNING** — `tools/run_stress_model.py` / `run_stress_events.py` |
@@ -105,14 +105,19 @@ bioimpedance, `whr` = workout/exercise HR.
 
 ## 6. Gotchas
 
-- `tools/run_activity_model.py` is currently broken against 5.5.0 assets: it
-  pins `automatic_activity_detection_3_1_11.pt`, which this app version no
-  longer ships (it has `3_1_12`/`3_1_15`). Same failure mode as the CVA
-  runner's `cva_2_1_0` pin — resolve newest-prefix instead.
+- `tools/run_activity_model.py` was broken against 5.5.0 assets (pinned
+  `automatic_activity_detection_3_1_11.pt`, no longer shipped); fixed by
+  newest-prefix resolution — same pattern as the CVA runner's `find_model()`.
+  AAD 3.1.15 changed `forward`: three scalar settings tensors became one
+  optional `global_settings` row read by column (3=allow_non_wear,
+  12=is_workout_proba_threshold, 26=min_workout_duration_minutes; NaN →
+  baked-in default); runners detect the convention from
+  `model.forward.schema.arguments`.
 - The key is tied to the account/server session; if a future app update
   changes it, `--list` failing = re-capture, not a code bug.
-- `sleepstaging_2_6_0` needs `oura_ops::oura_create_windows` — vanilla
-  `torch.jit.load` refuses it; would need the custom op implemented.
+- `sleepstaging_2_6_0` calls `oura_ops::oura_create_windows` — vanilla
+  `torch.jit.load` refuses it; solved by registering the op through
+  `nssa_ops.py` (MSVC-built DLL, see `build_nssa_ops.bat`).
 - `cva_2_1_5` consumes embeddings, not raw PPG — don't feed it PPG windows.
 - Windows: run tools with native `C:/`-style paths; `notes/models/` and
   `model_key.hex` are gitignored — back them up outside the repo.
