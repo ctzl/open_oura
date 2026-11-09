@@ -359,8 +359,9 @@ impl Store {
     /// the serial is not registered.
     pub fn rename_ring(&self, serial: &str, name: &str, note: Option<&str>) -> Result<bool> {
         let changed = match note {
+            // NULLIF lets an empty string clear the note; None leaves it alone.
             Some(note) => self.conn.execute(
-                "UPDATE rings SET name = ?2, note = ?3 WHERE serial = ?1",
+                "UPDATE rings SET name = ?2, note = NULLIF(?3, '') WHERE serial = ?1",
                 params![serial, name, note],
             )?,
             None => self.conn.execute(
@@ -378,6 +379,19 @@ impl Store {
             params![serial, key_hex, source],
         )?;
         Ok(changed > 0)
+    }
+
+    /// Hardware MAC per registered serial, from the `device` table captured at
+    /// first connect. Informational only — BLE targeting must NOT use it (rings
+    /// advertise rotating random addresses; the MAC is the factory identity).
+    pub fn ring_macs(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT serial, mac FROM device WHERE mac IS NOT NULL AND mac <> ''")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
     }
 
     /// Every registered ring with its activity, for the CLI and the dashboard
