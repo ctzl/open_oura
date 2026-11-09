@@ -23,6 +23,7 @@ exact sport label is the model's best guess from MET/motion/HR/temp alone.
 import argparse
 import datetime
 import json as jsonlib
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -37,8 +38,21 @@ from _common import resolve_db
 warnings.filterwarnings("ignore", message=".*searchsorted.*")
 
 REPO = Path(__file__).resolve().parent.parent
-MODEL = REPO / "notes" / "models" / "automatic_activity_detection_3_1_11.pt"
-MODEL_VERSION = "3.1.11"
+
+
+def find_model():
+    """Newest decrypted AAD model — the asset set rotates with every app version
+    (3.1.11 is already gone), so match by prefix and take the highest version."""
+    cands = sorted((REPO / "notes" / "models").glob("automatic_activity_detection_3_1_*.pt"),
+                   key=lambda p: [int(x) for x in re.findall(r"\d+", p.name)])
+    if not cands:
+        sys.exit("error: no decrypted automatic_activity_detection_3_1_*.pt in notes/models "
+                 "— decrypt the assets with model_key.hex first")
+    return cands[-1]
+
+
+MODEL = find_model()
+MODEL_VERSION = ".".join(re.findall(r"\d+", MODEL.name))
 
 # behavior-id -> name, from the model's behavior table (ActivityTypes.json).
 BEHAVIOR = {
@@ -251,10 +265,22 @@ def main():
     user = torch.tensor([30, 1, 1.78, 78] + [float("nan")] * 10, dtype=torch.float32)
 
     m = torch.jit.load(str(MODEL), map_location="cpu").eval()
+    # AAD <=3.1.12 takes three scalar settings tensors positionally; 3.1.15
+    # replaced them with one optional `global_settings` row read by column
+    # (3=allow_non_wear, 12=is_workout_proba_threshold, 26=min_workout_duration_minutes;
+    # NaN falls back to the model's baked-in default). Adapt to the loaded schema.
+    if "global_settings" in [a.name for a in m.forward.schema.arguments]:
+        row = [float("nan")] * 72
+        row[3] = 0.0
+        row[12] = args.threshold
+        row[26] = args.min_duration
+        settings = [torch.tensor(row, dtype=torch.float32).reshape(1, -1)]
+    else:
+        settings = [torch.tensor(args.threshold), torch.tensor(args.min_duration), torch.tensor(0.0)]
     with torch.no_grad():
         workouts, _, _segments = m(
             context, user, met_t, step_t, motion_t, temp_t, hr_t,
-            None, None, torch.tensor(args.threshold), torch.tensor(args.min_duration), torch.tensor(0.0))
+            None, None, *settings)
 
     def to_local(minute):
         return datetime.datetime.utcfromtimestamp((minute + OFFSET) * 60 + args.tz * 3600)
