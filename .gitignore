@@ -112,3 +112,4 @@ nssa_cache.json
 
 oura.db-shm
 oura.db-wal
+activity_log.jsonl

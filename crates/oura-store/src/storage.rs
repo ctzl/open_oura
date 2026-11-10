@@ -84,6 +84,11 @@ CREATE TABLE IF NOT EXISTS rings (
     added_unix     INTEGER NOT NULL,
     last_seen_unix INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS dna_assignments (
+    filename TEXT PRIMARY KEY,
+    serial   TEXT NOT NULL
+);
 "#;
 
 /// Current ring-registry schema version stored in `store_meta`.
@@ -431,6 +436,32 @@ impl Store {
             .conn
             .query_row("SELECT name FROM rings WHERE serial = ?1", params![serial], |r| r.get(0))
             .optional()?)
+    }
+
+    /// DNA file → ring-serial profile assignments (docs/profiles.md).
+    pub fn list_dna_assignments(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self.conn.prepare("SELECT filename, serial FROM dna_assignments")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(rows)
+    }
+
+    /// Point a DNA filename at a profile serial (empty serial clears it).
+    pub fn set_dna_assignment(&self, filename: &str, serial: &str) -> Result<()> {
+        if serial.is_empty() {
+            self.conn.execute(
+                "DELETE FROM dna_assignments WHERE filename = ?1",
+                params![filename],
+            )?;
+        } else {
+            self.conn.execute(
+                "INSERT INTO dna_assignments (filename, serial) VALUES (?1, ?2)
+                 ON CONFLICT(filename) DO UPDATE SET serial = excluded.serial",
+                params![filename, serial],
+            )?;
+        }
+        Ok(())
     }
 
     /// Device identity + last-sync for display: the most-recently-updated device
