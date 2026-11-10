@@ -109,6 +109,10 @@ key.hex
 tools/frida-server
 # local caches
 nssa_cache.json
+# incremental-recompute sidecar caches (regenerable; derived from oura.db)
+*.inc.json
+*.units.json
+*.skel.pkl
 
 oura.db-shm
 oura.db-wal
